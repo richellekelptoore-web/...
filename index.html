@@ -559,16 +559,28 @@
       const startDrill = useGame((s) => s.startDrill);
       const resolveDrill = useGame((s) => s.resolveDrill);
       const tick = useGame((s) => s.tick);
+      const lastTriggerSecond = useRef(-1);
+      const resolveTimer = useRef(null);
       useFrame((_, dt) => tick(dt));
 
       useEffect(() => {
+        const second = Math.floor(time);
         if (drillCount >= 5) return;
-        if (!activeDrill && time > 0 && Math.floor(time) % 90 === 0) {
+        if (!activeDrill && time > 0 && second % 90 === 0 && second !== lastTriggerSecond.current) {
+          lastTriggerSecond.current = second;
           const d = drills[Math.floor(Math.random() * drills.length)];
           startDrill(d);
-          setTimeout(() => resolveDrill(), 60000);
+          if (resolveTimer.current) clearTimeout(resolveTimer.current);
+          resolveTimer.current = setTimeout(() => {
+            resolveDrill();
+            resolveTimer.current = null;
+          }, 60000);
         }
       }, [time, activeDrill, drillCount]);
+
+      useEffect(() => () => {
+        if (resolveTimer.current) clearTimeout(resolveTimer.current);
+      }, []);
       return null;
     }
 
