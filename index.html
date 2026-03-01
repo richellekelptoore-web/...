@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>School Emergency Drill Simulator</title>
+  <style>
+    html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0f172a; color: #e2e8f0; font-family: Inter, system-ui, sans-serif; }
+    .hud { position: fixed; top: 8px; left: 8px; z-index: 20; background: rgba(15, 23, 42, 0.82); border: 1px solid #334155; border-radius: 10px; padding: 10px; width: 340px; backdrop-filter: blur(4px); }
+    .hud h1 { margin: 0 0 6px; font-size: 14px; }
+    .hud p { margin: 4px 0; font-size: 12px; }
+    .row { display: flex; justify-content: space-between; gap: 8px; }
+    .pill { padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .drill-flood { background: #1d4ed8; }
+    .drill-earthquake { background: #92400e; }
+    .drill-tornado { background: #312e81; }
+    .drill-fire { background: #b91c1c; }
+    .drill-hideout { background: #111827; border: 1px solid #64748b; }
+    .minimap { position: fixed; right: 8px; top: 8px; z-index: 20; background: rgba(2, 6, 23, 0.78); border: 1px solid #334155; border-radius: 8px; }
+    .report { position: fixed; inset: 0; z-index: 30; background: rgba(2, 6, 23, 0.9); display: grid; place-items: center; }
+    .report .card { width: 500px; max-width: 92vw; background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 20px; }
+    .report h2 { margin-top: 0; }
+    .hint { position: fixed; left: 8px; bottom: 8px; z-index: 20; font-size: 12px; background: rgba(15,23,42,.8); border: 1px solid #334155; padding: 8px; border-radius: 8px; }
+    .mobile-controls { position: fixed; inset: 0; z-index: 25; pointer-events: none; }
+    .touch-pad { position: absolute; bottom: 14px; width: 40vw; max-width: 180px; height: 40vw; max-height: 180px; border: 2px solid rgba(148,163,184,.45); border-radius: 999px; background: rgba(15,23,42,.25); pointer-events: auto; touch-action: none; }
+    .touch-pad.left { left: 10px; }
+    .touch-pad.right { right: 10px; }
+    .touch-dot { position: absolute; width: 52px; height: 52px; border-radius: 999px; background: rgba(226,232,240,.65); transform: translate(-50%, -50%); }
+    .mobile-buttons { position: absolute; right: 10px; bottom: 210px; display: flex; flex-direction: column; gap: 8px; pointer-events: auto; }
+    .mobile-buttons button { border: 1px solid #475569; background: rgba(15,23,42,.8); color: #f8fafc; border-radius: 8px; padding: 8px 10px; }
+    .mobile-banner-ad { position: fixed; left: 0; right: 0; top: 0; z-index: 40; background: #facc15; color: #111827; text-align: center; font-weight: 700; padding: 8px 90px 8px 10px; }
+    .remove-ads-btn { position: fixed; top: 6px; left: 6px; z-index: 41; border: 0; border-radius: 8px; background: #0f172a; color: #fff; padding: 7px 10px; font-size: 12px; }
+    .fullscreen-ad { position: fixed; inset: 0; z-index: 50; background: rgba(2,6,23,.92); display: grid; place-items: center; }
+    .fullscreen-ad .ad-card { width: min(92vw, 420px); background: #111827; border: 1px solid #475569; border-radius: 12px; padding: 16px; text-align: center; }
+    .fullscreen-ad .ad-card h3 { margin-top: 0; }
+    .fullscreen-ad .ad-card button { margin: 6px; border: 0; border-radius: 8px; padding: 9px 12px; }
+    .btn-primary { background: #f59e0b; color: #111827; font-weight: 700; }
+    .btn-secondary { background: #334155; color: #f8fafc; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" data-type="module" data-presets="react">
+    import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'https://esm.sh/react@18.2.0';
+    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client?deps=react@18.2.0';
+    import * as THREE from 'https://esm.sh/three@0.162.0';
+    import { Canvas, useFrame, useThree } from 'https://esm.sh/@react-three/fiber@8.16.6?deps=react@18.2.0,react-dom@18.2.0,three@0.162.0';
+    import { PointerLockControls, Text, Sky } from 'https://esm.sh/@react-three/drei@9.105.6?deps=react@18.2.0,react-dom@18.2.0,three@0.162.0,@react-three/fiber@8.16.6';
+    import { createStore } from 'https://esm.sh/zustand@4.5.2/vanilla';
+    import * as CANNON from 'https://esm.sh/cannon-es@0.20.0';
+    import { VRButton } from 'https://esm.sh/three@0.162.0/examples/jsm/webxr/VRButton.js';
+
+    const classroomCount = 15;
+    const studentsPerClass = 15;
+    const CLASS_W = 12;
+    const CLASS_D = 10;
+    const HALL_W = 8;
+    const HALL_LEN = 140;
+    const OUTSIDE_Z = 42;
+
+    const drills = ['flood', 'earthquake', 'tornado', 'fire', 'hideout'];
+    const isMobileDevice = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth < 1100);
+    const drillStateMap = {
+      flood: 'stand_on_table',
+      earthquake: 'hide_under_desk',
+      tornado: 'follow_teacher',
+      fire: 'evacuate_outside',
+      hideout: 'seated'
+    };
+
+    const makeLayout = () => {
+      const rooms = [];
+      const spacing = 18;
+      let idx = 0;
+      for (let side = 0; side < 2; side++) {
+        const z = side === 0 ? -(HALL_W / 2 + CLASS_D / 2) : (HALL_W / 2 + CLASS_D / 2);
+        for (let i = 0; i < 7; i++) {
+          const x = -54 + i * spacing;
+          rooms.push({ id: `class-${idx}`, x, z, side, door: new THREE.Vector3(x, 1, side === 0 ? -HALL_W / 2 : HALL_W / 2) });
+          idx++;
+        }
+      }
+      rooms.push({ id: `class-14`, x: 64, z: 0, side: 2, door: new THREE.Vector3(58, 1, 0) });
+      return rooms;
+    };
+
+    const classroomLayout = makeLayout();
+
+    const gameStore = createStore((set, get) => ({
+      time: 0,
+      activeDrill: null,
+      drillCount: 0,
+      reactionTimes: [],
+      panic: 0,
+      leadership: 100,
+      playerPaper: null,
+      lightsOff: false,
+      lockedDoors: false,
+      playerPos: [0,2,0],
+      mobileInput: { moveX: 0, moveY: 0, lookX: 0, lookY: 0, jump: false, crouch: false, interact: false },
+      adsRemoved: false,
+      mobileFullAdOpen: false,
+      students: classroomLayout.flatMap((room) => {
+        const seats = [];
+        for (let i = 0; i < studentsPerClass; i++) {
+          const row = Math.floor(i / 5);
+          const col = i % 5;
+          const sx = room.x - 4 + col * 2;
+          const sz = room.z + (room.side === 0 ? -2 : 2) + (room.side === 0 ? row * 1.5 : -row * 1.5);
+          seats.push({ id: `${room.id}-student-${i}`, roomId: room.id, pos: [sx, 1, sz], seat: [sx, 1, sz], state: 'seated', progress: 0, working: false });
+        }
+        return seats;
+      }),
+      teachers: classroomLayout.map((room) => ({ id: `${room.id}-teacher`, roomId: room.id, pos: [room.x, 1, room.z], patrolT: 0, guiding: false })),
+      papers: classroomLayout.map((room, i) => ({ id: `paper-${i}`, roomId: room.id, pos: [room.x + 3, 1.05, room.z], held: false, owner: null })),
+      startDrill: (name) => {
+        const now = get().time;
+        set((s) => ({
+          activeDrill: name,
+          drillCount: s.drillCount + 1,
+          panic: Math.min(100, s.panic + 6),
+          lightsOff: name === 'hideout',
+          lockedDoors: name === 'hideout',
+          reactionStart: now,
+          students: s.students.map((stu) => ({ ...stu, state: drillStateMap[name] || 'seated', progress: 0 })),
+          teachers: s.teachers.map((t) => ({ ...t, guiding: true }))
+        }));
+      },
+      resolveDrill: () => {
+        const s = get();
+        const inSafe = s.students.filter((stu) => {
+          if (s.activeDrill === 'fire') return stu.pos[2] > OUTSIDE_Z - 10;
+          if (s.activeDrill === 'tornado') return Math.abs(stu.pos[2]) < HALL_W;
+          if (s.activeDrill === 'earthquake') return stu.state === 'hide_under_desk';
+          if (s.activeDrill === 'flood') return stu.state === 'stand_on_table';
+          if (s.activeDrill === 'hideout') return stu.roomId.startsWith('class-');
+          return false;
+        }).length;
+        const safePct = inSafe / s.students.length;
+        const reaction = Math.max(0, s.time - (s.reactionStart || s.time));
+        const leadershipDelta = safePct > 0.9 ? 2 : -5;
+        set({
+          activeDrill: null,
+          lightsOff: false,
+          lockedDoors: false,
+          reactionTimes: [...s.reactionTimes, reaction],
+          leadership: Math.max(0, Math.min(120, s.leadership + leadershipDelta)),
+          panic: Math.max(0, s.panic - 3),
+          teachers: s.teachers.map((t) => ({ ...t, guiding: false })),
+          students: s.students.map((stu) => ({ ...stu, state: stu.working ? 'working' : 'seated' }))
+        });
+      },
+      updateStudent: (id, patch) => set((s) => ({ students: s.students.map((st) => st.id === id ? { ...st, ...patch } : st) })),
+      updateTeacher: (id, patch) => set((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...patch } : t) })),
+      pickupPaper: (paperId) => set((s) => ({
+        playerPaper: paperId,
+        papers: s.papers.map((p) => p.id === paperId ? { ...p, held: true, owner: 'player' } : p)
+      })),
+      dropPaper: (pos) => set((s) => ({
+        papers: s.papers.map((p) => p.id === s.playerPaper ? { ...p, held: false, owner: null, pos } : p),
+        playerPaper: null
+      })),
+      givePaperToStudent: (studentId) => set((s) => ({
+        playerPaper: null,
+        students: s.students.map((st) => st.id === studentId ? { ...st, working: true, state: 'working' } : st),
+        leadership: Math.min(120, s.leadership + 1),
+        panic: Math.max(0, s.panic - 0.4)
+      })),
+      setPlayerPos: (pos) => set({ playerPos: pos }),
+      setMobileInput: (patch) => set((s) => ({ mobileInput: { ...s.mobileInput, ...patch } })),
+      setAdsRemoved: (flag) => set({ adsRemoved: flag }),
+      setMobileFullAdOpen: (flag) => set({ mobileFullAdOpen: flag }),
+      tick: (dt) => set((s) => ({ time: s.time + dt }))
+    }));
+
+    const useGame = (selector = (s) => s) => useSyncExternalStore(gameStore.subscribe, () => selector(gameStore.getState()));
+
+    function usePhysicsWorld() {
+      const worldRef = useRef();
+      if (!worldRef.current) {
+        const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+        const ground = new CANNON.Body({ mass: 0, shape: new CANNON.Plane() });
+        ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+        world.addBody(ground);
+        worldRef.current = world;
+      }
+      useFrame((_, dt) => worldRef.current.step(1 / 60, dt, 3));
+      return worldRef.current;
+    }
+
+    function SchoolStatic() {
+      const { lightsOff, lockedDoors, activeDrill } = useGame();
+      return (
+        <group>
+          <Sky distance={450} sunPosition={[80, 60, 30]} />
+          <ambientLight intensity={lightsOff ? 0.08 : 0.45} />
+          <directionalLight position={[30, 50, 20]} intensity={lightsOff ? 0.15 : 0.85} castShadow />
+          <mesh position={[0, 0, 0]} receiveShadow>
+            <boxGeometry args={[200, 0.2, 120]} />
+            <meshStandardMaterial color="#94a3b8" />
+          </mesh>
+          <mesh position={[0, 0.1, 0]}>
+            <boxGeometry args={[HALL_LEN, 0.2, HALL_W]} />
+            <meshStandardMaterial color="#e2e8f0" />
+          </mesh>
+          {classroomLayout.map((room) => (
+            <group key={room.id} position={[room.x, 0, room.z]}>
+              <mesh position={[0, 1.6, 0]}>
+                <boxGeometry args={[CLASS_W, 3.2, CLASS_D]} />
+                <meshStandardMaterial color={lightsOff && activeDrill === 'hideout' ? '#111827' : '#cbd5e1'} transparent opacity={0.22} />
+              </mesh>
+              {Array.from({ length: studentsPerClass }).map((_, i) => {
+                const row = Math.floor(i / 5);
+                const col = i % 5;
+                return (
+                  <mesh key={i} position={[-4 + col * 2, 0.5, room.side === 0 ? -2 + row * 1.5 : 2 - row * 1.5]}>
+                    <boxGeometry args={[1.2, 0.8, 0.9]} />
+                    <meshStandardMaterial color="#64748b" />
+                  </mesh>
+                );
+              })}
+              <mesh position={[2.9, 0.55, 0]}>
+                <boxGeometry args={[2.2, 1, 1.2]} />
+                <meshStandardMaterial color="#334155" />
+              </mesh>
+              <mesh position={[room.side === 0 ? 0 : 0, 1.2, room.side === 0 ? CLASS_D / 2 - 0.2 : -CLASS_D / 2 + 0.2]}>
+                <boxGeometry args={[1.6, 2.2, 0.2]} />
+                <meshStandardMaterial color={lockedDoors ? '#1e293b' : '#f1f5f9'} />
+              </mesh>
+              <mesh position={[-CLASS_W/2 + 0.2, 1.6, 0]}>
+                <boxGeometry args={[0.2, 1.6, 3.2]} />
+                <meshStandardMaterial color="#93c5fd" transparent opacity={0.5} />
+              </mesh>
+              <mesh position={[CLASS_W/2 - 0.4, 1.2, -3]}>
+                <boxGeometry args={[0.2, 0.6, 0.2]} />
+                <meshStandardMaterial color={lightsOff ? '#1e293b' : '#22c55e'} />
+              </mesh>
+            </group>
+          ))}
+          <NamedRoom pos={[-72,1,16]} size={[12,3,9]} label="Office" color="#fde68a" />
+          {Array.from({length:5}).map((_,i)=><NamedRoom key={i} pos={[-50+i*8,1,16]} size={[6,3,7]} label={`Restroom ${i+1}`} color="#bfdbfe" />)}
+          <NamedRoom pos={[16,1,16]} size={[16,3,12]} label="Lunch Area" color="#86efac" />
+          <NamedRoom pos={[40,1,16]} size={[20,6,16]} label="Gym" color="#fdba74" />
+          <NamedRoom pos={[64,1,16]} size={[10,3,8]} label="Nurse" color="#f9a8d4" />
+          <NamedRoom pos={[0,1,OUTSIDE_Z+6]} size={[70,2,24]} label="Outdoor Safe Zone" color="#4ade80" />
+        </group>
+      );
+    }
+
+    function NamedRoom({ pos, size, label, color }) {
+      return (
+        <group position={pos}>
+          <mesh>
+            <boxGeometry args={size} />
+            <meshStandardMaterial color={color} transparent opacity={0.25} />
+          </mesh>
+          <Text position={[0, size[1]/2 + 0.6, 0]} fontSize={0.6} color="black">{label}</Text>
+        </group>
+      );
+    }
+
+    function Student({ student }) {
+      const update = useGame((s) => s.updateStudent);
+      const activeDrill = useGame((s) => s.activeDrill);
+      const teachers = useGame((s) => s.teachers);
+      const room = classroomLayout.find((r) => r.id === student.roomId);
+      const ref = useRef();
+      useFrame((_, dt) => {
+        const p = new THREE.Vector3(...student.pos);
+        let target = new THREE.Vector3(...student.seat);
+        const hallwayPoint = new THREE.Vector3(room.door.x, 1, room.side === 0 ? -1 : 1);
+        const outsidePoint = new THREE.Vector3(0, 1, OUTSIDE_Z);
+        const teacher = teachers.find((t) => t.roomId === student.roomId);
+
+        if (student.state === 'wandering') {
+          target = new THREE.Vector3(room.x + Math.sin(student.progress * 7) * 3, 1, room.z + Math.cos(student.progress * 5) * 2);
+        } else if (student.state === 'follow_teacher') {
+          target = teacher ? new THREE.Vector3(...teacher.pos).lerp(hallwayPoint, 0.3) : hallwayPoint;
+        } else if (student.state === 'crouch_hallway') {
+          target = hallwayPoint;
+        } else if (student.state === 'evacuate_outside') {
+          target = p.distanceTo(hallwayPoint) > 1.2 ? hallwayPoint : outsidePoint;
+        } else if (student.state === 'hide_under_desk') {
+          target = new THREE.Vector3(student.seat[0], 0.62, student.seat[2]);
+        } else if (student.state === 'stand_on_table') {
+          target = new THREE.Vector3(student.seat[0], 1.36, student.seat[2]);
+        } else if (student.state === 'working') {
+          target = new THREE.Vector3(student.seat[0], 1, student.seat[2]);
+        }
+
+        const speed = (student.state === 'evacuate_outside' || student.state === 'follow_teacher') ? 2.0 : 1.4;
+        const dir = target.clone().sub(p);
+        if (dir.length() > 0.03) {
+          dir.normalize().multiplyScalar(speed * dt);
+          const np = p.add(dir);
+          update(student.id, { pos: [np.x, Math.max(0.6, np.y), np.z], progress: (student.progress + dt * 0.4) % 1 });
+        }
+
+        if (activeDrill === 'tornado' && student.state === 'follow_teacher' && p.distanceTo(hallwayPoint) < 1.1) {
+          update(student.id, { state: 'crouch_hallway' });
+        }
+      });
+
+      return (
+        <mesh ref={ref} position={student.pos} castShadow>
+          <capsuleGeometry args={[0.25, 0.6, 4, 8]} />
+          <meshStandardMaterial color={student.working ? '#10b981' : '#22c55e'} />
+        </mesh>
+      );
+    }
+
+    function Teacher({ teacher }) {
+      const update = useGame((s) => s.updateTeacher);
+      const activeDrill = useGame((s) => s.activeDrill);
+      const room = classroomLayout.find((r) => r.id === teacher.roomId);
+      useFrame((_, dt) => {
+        const p = new THREE.Vector3(...teacher.pos);
+        let target = new THREE.Vector3(room.x + Math.sin(teacher.patrolT) * 2.8, 1, room.z + Math.cos(teacher.patrolT * 0.8) * 1.5);
+        if (teacher.guiding && activeDrill === 'fire') target = new THREE.Vector3(0, 1, OUTSIDE_Z - 5);
+        if (teacher.guiding && activeDrill === 'tornado') target = new THREE.Vector3(room.door.x, 1, room.side === 0 ? -1 : 1);
+        const dir = target.clone().sub(p);
+        if (dir.length() > 0.05) {
+          dir.normalize().multiplyScalar((teacher.guiding ? 1.8 : 1.1) * dt);
+          const np = p.add(dir);
+          update(teacher.id, { pos: [np.x, np.y, np.z], patrolT: teacher.patrolT + dt });
+        } else {
+          update(teacher.id, { patrolT: teacher.patrolT + dt * 0.8 });
+        }
+      });
+      return (
+        <mesh position={teacher.pos} castShadow>
+          <capsuleGeometry args={[0.32, 0.8, 4, 8]} />
+          <meshStandardMaterial color="#a855f7" />
+        </mesh>
+      );
+    }
+
+    function Papers() {
+      const papers = useGame((s) => s.papers);
+      return papers.filter((p) => !p.held).map((p) => (
+        <mesh key={p.id} position={p.pos}>
+          <boxGeometry args={[0.4, 0.03, 0.3]} />
+          <meshStandardMaterial color="#fafafa" />
+        </mesh>
+      ));
+    }
+
+    function PlayerController() {
+      const { camera, gl } = useThree();
+      const world = usePhysicsWorld();
+      const activeDrill = useGame((s) => s.activeDrill);
+      const papers = useGame((s) => s.papers);
+      const students = useGame((s) => s.students);
+      const playerPaper = useGame((s) => s.playerPaper);
+      const pickupPaper = useGame((s) => s.pickupPaper);
+      const dropPaper = useGame((s) => s.dropPaper);
+      const givePaperToStudent = useGame((s) => s.givePaperToStudent);
+      const setPlayerPos = useGame((s) => s.setPlayerPos);
+      const mobileInput = useGame((s) => s.mobileInput);
+      const setMobileInput = useGame((s) => s.setMobileInput);
+
+      const bodyRef = useRef();
+      const vel = useRef(new THREE.Vector3());
+      const keys = useRef({});
+      const crouch = useRef(false);
+
+      useEffect(() => {
+        const body = new CANNON.Body({ mass: 70, position: new CANNON.Vec3(0, 2, 0), shape: new CANNON.Sphere(0.35), linearDamping: 0.25 });
+        world.addBody(body);
+        bodyRef.current = body;
+        const down = (e) => {
+          keys.current[e.code] = true;
+          if (e.code === 'ControlLeft') crouch.current = true;
+          if (e.code === 'KeyE') interact();
+        };
+        const up = (e) => {
+          keys.current[e.code] = false;
+          if (e.code === 'ControlLeft') crouch.current = false;
+        };
+        window.addEventListener('keydown', down);
+        window.addEventListener('keyup', up);
+        return () => {
+          world.removeBody(body);
+          window.removeEventListener('keydown', down);
+          window.removeEventListener('keyup', up);
+        };
+      }, []);
+
+      const interact = () => {
+        const c = camera.position;
+        if (!playerPaper) {
+          const nearPaper = papers.find((p) => !p.held && new THREE.Vector3(...p.pos).distanceTo(c) < 2.2);
+          if (nearPaper) return pickupPaper(nearPaper.id);
+        }
+        const nearStudent = students.find((s) => new THREE.Vector3(...s.pos).distanceTo(c) < 1.8);
+        if (playerPaper && nearStudent) return givePaperToStudent(nearStudent.id);
+        if (playerPaper) dropPaper([c.x + camera.getWorldDirection(new THREE.Vector3()).x, 1.1, c.z + camera.getWorldDirection(new THREE.Vector3()).z]);
+      };
+
+      useFrame((_, dt) => {
+        if (!bodyRef.current) return;
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        forward.y = 0;
+        forward.normalize();
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+        vel.current.set(0, bodyRef.current.velocity.y, 0);
+        const walk = (keys.current['ShiftLeft'] ? 5 : 3) * (crouch.current ? 0.5 : 1);
+        if (keys.current['KeyW']) vel.current.add(forward.clone().multiplyScalar(walk));
+        if (keys.current['KeyS']) vel.current.add(forward.clone().multiplyScalar(-walk));
+        if (keys.current['KeyA']) vel.current.add(right.clone().multiplyScalar(-walk));
+        if (keys.current['KeyD']) vel.current.add(right.clone().multiplyScalar(walk));
+        if (keys.current['Space'] && Math.abs(bodyRef.current.velocity.y) < 0.05) bodyRef.current.velocity.y = 5;
+
+        if (isMobileDevice) {
+          if (Math.abs(mobileInput.lookX) > 0.01 || Math.abs(mobileInput.lookY) > 0.01) {
+            camera.rotation.y -= mobileInput.lookX * dt * 1.8;
+            camera.rotation.x -= mobileInput.lookY * dt * 1.6;
+            camera.rotation.x = Math.max(-1.35, Math.min(1.35, camera.rotation.x));
+          }
+          if (Math.abs(mobileInput.moveY) > 0.05) vel.current.add(forward.clone().multiplyScalar(-mobileInput.moveY * walk));
+          if (Math.abs(mobileInput.moveX) > 0.05) vel.current.add(right.clone().multiplyScalar(mobileInput.moveX * walk));
+          if (mobileInput.jump && Math.abs(bodyRef.current.velocity.y) < 0.05) bodyRef.current.velocity.y = 5;
+          crouch.current = !!mobileInput.crouch;
+          if (mobileInput.interact) {
+            interact();
+            setMobileInput({ interact: false });
+          }
+        }
+
+        if (gl.xr.isPresenting && gl.xr.getSession()) {
+          for (const src of gl.xr.getSession().inputSources) {
+            const gp = src.gamepad;
+            if (!gp || !gp.axes?.length) continue;
+            const [axX, axY] = gp.axes;
+            vel.current.add(right.clone().multiplyScalar(axX * 2.8));
+            vel.current.add(forward.clone().multiplyScalar(axY * 2.8));
+            if (gp.buttons[1]?.pressed) crouch.current = true;
+            if (gp.buttons[0]?.pressed) interact();
+          }
+        }
+
+        bodyRef.current.velocity.x = vel.current.x;
+        bodyRef.current.velocity.z = vel.current.z;
+        camera.position.set(bodyRef.current.position.x, bodyRef.current.position.y + (crouch.current ? 1.0 : 1.55), bodyRef.current.position.z);
+        setPlayerPos([camera.position.x, camera.position.y, camera.position.z]);
+      });
+
+      return (
+        <>
+          {!isMobileDevice && <PointerLockControls />}
+          <Text position={[camera.position.x, camera.position.y + 0.25, camera.position.z - 1.2]} fontSize={0.14} color="#fef3c7">
+            {activeDrill ? `ACTIVE DRILL: ${activeDrill.toUpperCase()}` : 'Normal Operations'}
+          </Text>
+        </>
+      );
+    }
+
+
+    function MobileControls() {
+      const setMobileInput = useGame((s) => s.setMobileInput);
+      const leftDot = useRef();
+      const rightDot = useRef();
+
+      const bindPad = (type, dotRef) => ({
+        onPointerDown: (e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const r = e.currentTarget.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const dx = Math.max(-1, Math.min(1, (e.clientX - cx) / (r.width / 2)));
+          const dy = Math.max(-1, Math.min(1, (e.clientY - cy) / (r.height / 2)));
+          if (type === 'move') setMobileInput({ moveX: dx, moveY: dy });
+          if (type === 'look') setMobileInput({ lookX: dx, lookY: dy });
+          dotRef.current.style.left = `${50 + dx * 40}%`;
+          dotRef.current.style.top = `${50 + dy * 40}%`;
+        },
+        onPointerMove: (e) => {
+          if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const dx = Math.max(-1, Math.min(1, (e.clientX - cx) / (r.width / 2)));
+          const dy = Math.max(-1, Math.min(1, (e.clientY - cy) / (r.height / 2)));
+          if (type === 'move') setMobileInput({ moveX: dx, moveY: dy });
+          if (type === 'look') setMobileInput({ lookX: dx, lookY: dy });
+          dotRef.current.style.left = `${50 + dx * 40}%`;
+          dotRef.current.style.top = `${50 + dy * 40}%`;
+        },
+        onPointerUp: () => {
+          if (type === 'move') setMobileInput({ moveX: 0, moveY: 0 });
+          if (type === 'look') setMobileInput({ lookX: 0, lookY: 0 });
+          dotRef.current.style.left = `50%`;
+          dotRef.current.style.top = `50%`;
+        }
+      });
+
+      return (
+        <div className="mobile-controls">
+          <div className="touch-pad left" {...bindPad('move', leftDot)}><div ref={leftDot} className="touch-dot" style={{ left: '50%', top: '50%' }} /></div>
+          <div className="touch-pad right" {...bindPad('look', rightDot)}><div ref={rightDot} className="touch-dot" style={{ left: '50%', top: '50%' }} /></div>
+          <div className="mobile-buttons">
+            <button onPointerDown={() => setMobileInput({ jump: true })} onPointerUp={() => setMobileInput({ jump: false })}>Jump</button>
+            <button onPointerDown={() => setMobileInput({ crouch: true })} onPointerUp={() => setMobileInput({ crouch: false })}>Crouch</button>
+            <button onClick={() => setMobileInput({ interact: true })}>Interact</button>
+          </div>
+        </div>
+      );
+    }
+
+    function MobileAdLayer() {
+      const adsRemoved = useGame((s) => s.adsRemoved);
+      const fullOpen = useGame((s) => s.mobileFullAdOpen);
+      const setAdsRemoved = useGame((s) => s.setAdsRemoved);
+      const setMobileFullAdOpen = useGame((s) => s.setMobileFullAdOpen);
+      const [countdown, setCountdown] = useState(8);
+
+      useEffect(() => {
+        if (!isMobileDevice || adsRemoved) return;
+        const interval = setInterval(() => {
+          setCountdown(8);
+          setMobileFullAdOpen(true);
+        }, 60000);
+        return () => clearInterval(interval);
+      }, [adsRemoved]);
+
+      useEffect(() => {
+        if (!fullOpen) return;
+        const t = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
+        return () => clearInterval(t);
+      }, [fullOpen]);
+
+      if (!isMobileDevice || adsRemoved) return null;
+      return (
+        <>
+          <button className="remove-ads-btn" onClick={() => { if (confirm('Start remove-ads subscription for $4.99/month?')) setAdsRemoved(true); }}>Remove Ads $4.99/mo</button>
+          <div className="mobile-banner-ad">Sponsored School Safety Content • Mobile Banner Ad</div>
+          {fullOpen && (
+            <div className="fullscreen-ad">
+              <div className="ad-card">
+                <h3>Sponsored Break</h3>
+                <p>Mobile-only full ad appears every 1 minute.</p>
+                <p>Close in: {countdown}s</p>
+                <button className="btn-primary" onClick={() => setAdsRemoved(true)}>Remove Ads - $4.99/month</button>
+                <button className="btn-secondary" disabled={countdown > 0} onClick={() => setMobileFullAdOpen(false)}>{countdown > 0 ? 'Wait to Close' : 'Close Ad'}</button>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    function DrillDirector() {
+      const time = useGame((s) => s.time);
+      const activeDrill = useGame((s) => s.activeDrill);
+      const drillCount = useGame((s) => s.drillCount);
+      const startDrill = useGame((s) => s.startDrill);
+      const resolveDrill = useGame((s) => s.resolveDrill);
+      const tick = useGame((s) => s.tick);
+      useFrame((_, dt) => tick(dt));
+
+      useEffect(() => {
+        if (drillCount >= 5) return;
+        if (!activeDrill && time > 0 && Math.floor(time) % 180 === 0) {
+          const d = drills[Math.floor(Math.random() * drills.length)];
+          startDrill(d);
+          setTimeout(() => resolveDrill(), 40000);
+        }
+      }, [time, activeDrill, drillCount]);
+      return null;
+    }
+
+    function Minimap() {
+      const canvasRef = useRef();
+      const students = useGame((s) => s.students);
+      const teachers = useGame((s) => s.teachers);
+      const activeDrill = useGame((s) => s.activeDrill);
+      const playerPos = useGame((s) => s.playerPos);
+
+      useEffect(() => {
+        const c = canvasRef.current;
+        const ctx = c.getContext('2d');
+        const draw = () => {
+          ctx.clearRect(0, 0, c.width, c.height);
+          ctx.fillStyle = '#0b1220';
+          ctx.fillRect(0, 0, c.width, c.height);
+          const tx = (x) => (x + 80) * 2.2;
+          const tz = (z) => (z + 55) * 2.0;
+          ctx.strokeStyle = '#334155';
+          classroomLayout.forEach((r) => ctx.strokeRect(tx(r.x - CLASS_W/2), tz(r.z - CLASS_D/2), CLASS_W * 2.2, CLASS_D * 2.0));
+          ctx.strokeRect(tx(-HALL_LEN/2), tz(-HALL_W/2), HALL_LEN*2.2, HALL_W*2.0);
+          ctx.fillStyle = 'yellow';
+          ctx.font = '12px sans-serif';
+          ctx.fillText(activeDrill ? `DRILL: ${activeDrill}` : 'DRILL: none', 10, 14);
+
+          ctx.fillStyle = '#3b82f6';
+          ctx.beginPath(); ctx.arc(tx(playerPos[0]), tz(playerPos[2]), 4, 0, Math.PI*2); ctx.fill();
+
+          ctx.fillStyle = '#22c55e';
+          for (let i = 0; i < students.length; i += 3) {
+            const st = students[i];
+            ctx.fillRect(tx(st.pos[0]) - 1.5, tz(st.pos[2]) - 1.5, 3, 3);
+          }
+          ctx.fillStyle = '#a855f7';
+          teachers.forEach((t) => ctx.fillRect(tx(t.pos[0]) - 2, tz(t.pos[2]) - 2, 4, 4));
+        };
+        draw();
+      }, [students, teachers, playerPos, activeDrill]);
+
+      return <canvas className="minimap" ref={canvasRef} width="360" height="260" />;
+    }
+
+    function HUD() {
+      const { activeDrill, drillCount, reactionTimes, panic, leadership, students } = useGame();
+      const safePct = useMemo(() => {
+        const safe = students.filter((s) => ['hide_under_desk', 'stand_on_table', 'crouch_hallway', 'evacuate_outside', 'working', 'seated'].includes(s.state)).length;
+        return Math.round((safe / students.length) * 100);
+      }, [students]);
+
+      const avgReaction = reactionTimes.length ? (reactionTimes.reduce((a, b) => a + b, 0) / reactionTimes.length).toFixed(1) : '--';
+      const score = Math.round((safePct * 0.45) + ((120 - panic) * 0.25) + (leadership * 0.3));
+      const grade = score > 112 ? 'S+' : score > 98 ? 'S' : score > 86 ? 'A' : score > 72 ? 'B' : score > 58 ? 'C' : score > 44 ? 'D' : 'F';
+
+      return (
+        <>
+          <div className="hud">
+            <h1>School Emergency Drill Simulator</h1>
+            <div className="row">
+              <p>Drills complete: {drillCount}/5</p>
+              <span className={`pill ${activeDrill ? `drill-${activeDrill}` : ''}`}>{activeDrill || 'none'}</span>
+            </div>
+            <p>Reaction time (avg): {avgReaction}s</p>
+            <p>Students safely positioned: {safePct}%</p>
+            <p>Panic level: {panic.toFixed(1)}</p>
+            <p>Leadership score: {leadership.toFixed(1)}</p>
+            <p>Projected grade: {grade}</p>
+          </div>
+          <div className="hint">WASD move, mouse look, Space jump, Ctrl crouch, E interact (paper pickup/drop/give). Enter VR button in lower-right. Trigger grab / grip drop / joystick locomotion / button crouch.</div>
+          {drillCount >= 5 && <FinalReport grade={grade} score={score} avgReaction={avgReaction} safePct={safePct} panic={panic} leadership={leadership} />}
+        </>
+      );
+    }
+
+    function FinalReport({ grade, score, avgReaction, safePct, panic, leadership }) {
+      return (
+        <div className="report">
+          <div className="card">
+            <h2>Final Emergency Preparedness Report</h2>
+            <p>Overall Grade: <strong>{grade}</strong></p>
+            <p>Total Score: {score}</p>
+            <p>Average Reaction Time: {avgReaction}s</p>
+            <p>Safe Positioning: {safePct}%</p>
+            <p>Panic Level: {panic.toFixed(1)}</p>
+            <p>Leadership Score: {leadership.toFixed(1)}</p>
+            <p>Simulation complete. This educational drill contains no violent mechanics.</p>
+          </div>
+        </div>
+      );
+    }
+
+    function Scene() {
+      const students = useGame((s) => s.students);
+      const teachers = useGame((s) => s.teachers);
+      return (
+        <>
+          <SchoolStatic />
+          {students.map((student) => <Student key={student.id} student={student} />)}
+          {teachers.map((teacher) => <Teacher key={teacher.id} teacher={teacher} />)}
+          <Papers />
+          <PlayerController />
+          <DrillDirector />
+        </>
+      );
+    }
+
+    function App() {
+      const { gl } = useThree();
+      useEffect(() => {
+        gl.xr.enabled = true;
+        document.body.appendChild(VRButton.createButton(gl));
+        return () => {
+          const btn = document.querySelector('button[title="Enter VR"]');
+          if (btn) btn.remove();
+        };
+      }, [gl]);
+      return <Scene />;
+    }
+
+    function Root() {
+      return (
+        <>
+          <Canvas camera={{ position: [0, 2, 0], fov: 70 }} shadows>
+            <App />
+          </Canvas>
+          <HUD />
+          <Minimap />
+          {isMobileDevice && <MobileControls />}
+          <MobileAdLayer />
+        </>
+      );
+    }
+
+    createRoot(document.getElementById('root')).render(<Root />);
+  </script>
+</body>
+</html>
